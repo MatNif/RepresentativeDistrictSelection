@@ -5,9 +5,12 @@ import numpy as np
 from pathlib import Path
 import h5py
 import matplotlib.pyplot as plt
+import hdbscan
+from kmedoids import KMedoids
 
 from constants import BUILDING_PLOT_DATA_PATH, POLYGON_DISTANCE_METRIC, DBSCAN_EPS, DBSCAN_MIN_SAMPLES, \
-                      CLUSTERED_BUILDING_DATA_PATH, DISTANCE_MATRIX_PATH, NBR_BUILDINGS
+                      CLUSTERING_APPROACH, CLUSTERED_BUILDING_DATA_PATH, DISTANCE_MATRIX_PATH, NBR_BUILDINGS, \
+                      N_LAND_USE_CLUSTERS, LAND_USE_DISTANCE_METRIC, REPRESENTATIVE_DISTRICT_PATH
 
 
 def create_geographical_clusters():
@@ -36,9 +39,8 @@ def create_geographical_clusters():
     # Step 2: Calculate the distance matrix between the multipolygons
     distance_matrix = generate_distance_matrix(plot_proxies_gdf, metric=POLYGON_DISTANCE_METRIC)
 
-    # Step 3: Apply DBSCAN using the distance matrix
-    dbscan = DBSCAN(eps=DBSCAN_EPS, min_samples=DBSCAN_MIN_SAMPLES, metric='precomputed')
-    plot_proxies_gdf['cluster'] = dbscan.fit_predict(distance_matrix)
+    # Step 3: Apply chosen clustering approach (and make use of the distance matrix)
+    plot_proxies_gdf['cluster'] = apply_clustering_approach(CLUSTERING_APPROACH, distance_matrix=distance_matrix)
 
     # Step 4: Map the DBSCAN clusters back to the original buildings
     buildings_with_clusters = buildings_with_plot.merge(plot_proxies_gdf[['cluster']], left_on='Name', right_index=True)
@@ -47,11 +49,12 @@ def create_geographical_clusters():
     buildings_with_clusters.to_file(CLUSTERED_BUILDING_DATA_PATH, driver='GeoJSON')
 
     # Visualization
+
     fig, ax = plt.subplots(figsize=(10, 10))
     buildings_with_clusters.plot(column='cluster', cmap='Set3', legend=True, ax=ax)
     ax.set_title('DBSCAN Clustering of Multipolygon Proxies')
     plt.show()
-    input("Press Enter to continue...")
+
 
 def compute_plot_proxy(buildings_in_plot):
     """
@@ -86,7 +89,7 @@ def generate_distance_matrix(geometries_gdf, metric='euclidean'):
     # Option 1: Use centroid distance
     if metric == 'centroid_euclidean':
         centroids = np.array([(geom.centroid.x, geom.centroid.y) for geom in geometries_gdf.geometry])
-        distance_matrix = cdist(centroids, centroids, metric='euclidean')
+        distance_matrix = cdist(XA=centroids, XB=centroids, metric='euclidean')
     # Option 2: Use Hausdorff distance (requires a custom function)
     elif metric == 'hausdorff':
         distance_matrix = np.array([[geom1.hausdorff_distance(geom2) for geom2 in geometries_gdf.geometry]
@@ -101,6 +104,61 @@ def generate_distance_matrix(geometries_gdf, metric='euclidean'):
     return distance_matrix
 
 
+def apply_clustering_approach(approach, distance_matrix=None):
+    """
+    Apply the chosen clustering approach to the distance matrix.
+
+    :param approach: Clustering approach to use
+    :param distance_matrix: Distance matrix to use
+    :return: Clusters
+    """
+    if approach == 'dbscan':
+        clusterer = DBSCAN(eps=DBSCAN_EPS, min_samples=DBSCAN_MIN_SAMPLES, metric='precomputed')
+        return clusterer.fit_predict(distance_matrix)
+    elif approach == 'hdbscan':
+        clusterer = hdbscan.HDBSCAN(min_cluster_size=10, min_samples=4, metric='precomputed')
+        return clusterer.fit_predict(distance_matrix)
+    else:
+        raise ValueError(f"Invalid clustering approach: {approach}")
+
+
+def select_representative_districts():
+    """
+    Select a representative district from each cluster based on a chosen criterion (e.g., building count).
+
+    :return:
+    """
+    # Load the clustered building data
+    buildings_with_clusters = gpd.read_file(CLUSTERED_BUILDING_DATA_PATH)
+
+    # Step 1: Group by 'cluster' and 'LU_DESC' to get counts of land-use types per cluster
+    cluster_landuse_counts = buildings_with_clusters.groupby(['cluster', 'LU_DESC']).size().unstack(fill_value=0)[1:]
+
+    # Step 2: Calculate the percentage of each land-use type within each cluster
+    cluster_landuse_percentage = cluster_landuse_counts.div(cluster_landuse_counts.sum(axis=1), axis=0)
+    cluster_landuse_array = cluster_landuse_percentage.fillna(0).to_numpy()  # Ensure no NaN values
+
+    # Step 3: Perform k-medoid clustering based on the percentage distributions
+    kmedoids = KMedoids(N_LAND_USE_CLUSTERS, method='fasterpam', metric=LAND_USE_DISTANCE_METRIC, random_state=42)
+    district_fit = kmedoids.fit(cluster_landuse_array)
+
+    # Step 4: Identify the representative districts
+    representative_districts = buildings_with_clusters[buildings_with_clusters['cluster'].isin(district_fit.medoid_indices_)]
+
+    # Save the representative districts to a Shape-file
+    for i, medoid_idx in enumerate(district_fit.medoid_indices_):
+        representative_district = representative_districts[representative_districts['cluster'] == medoid_idx]
+        representative_district.to_file(REPRESENTATIVE_DISTRICT_PATH, driver='ESRI Shapefile')
+
+    # Visualization
+    fig, ax = plt.subplots(figsize=(10, 10))
+    buildings_with_clusters.plot(column='cluster', cmap='Set3', legend=True, ax=ax)
+    representative_districts.plot(ax=ax, color='black', edgecolor='black', linewidth=2)
+    ax.set_title('Representative Districts')
+    plt.show()
+
+
 # Entry point of the script
 if __name__ == '__main__':
     create_geographical_clusters()
+    select_representative_districts()
