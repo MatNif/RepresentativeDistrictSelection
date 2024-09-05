@@ -3,14 +3,18 @@ from sklearn.cluster import DBSCAN
 from scipy.spatial.distance import cdist
 import numpy as np
 from pathlib import Path
+import os
+import shutil
 import h5py
 import matplotlib.pyplot as plt
 import hdbscan
 from kmedoids import KMedoids
+from sklearn.metrics import silhouette_score
 
 from constants import BUILDING_PLOT_DATA_PATH, POLYGON_DISTANCE_METRIC, DBSCAN_EPS, DBSCAN_MIN_SAMPLES, \
                       CLUSTERING_APPROACH, CLUSTERED_BUILDING_DATA_PATH, DISTANCE_MATRIX_PATH, NBR_BUILDINGS, \
-                      N_LAND_USE_CLUSTERS, LAND_USE_DISTANCE_METRIC, REPRESENTATIVE_DISTRICT_PATH
+                      LAND_USE_DISTANCE_METRIC, REPRESENTATIVE_DISTRICT_DIRECTORY, HDBSCAN_MIN_CLUSTER_SIZE, \
+                      HDBSCAN_MIN_SAMPLES, MIN_LAND_USE_CLUSTERS, MAX_LAND_USE_CLUSTERS
 
 
 def create_geographical_clusters():
@@ -116,7 +120,8 @@ def apply_clustering_approach(approach, distance_matrix=None):
         clusterer = DBSCAN(eps=DBSCAN_EPS, min_samples=DBSCAN_MIN_SAMPLES, metric='precomputed')
         return clusterer.fit_predict(distance_matrix)
     elif approach == 'hdbscan':
-        clusterer = hdbscan.HDBSCAN(min_cluster_size=10, min_samples=4, metric='precomputed')
+        clusterer = hdbscan.HDBSCAN(min_cluster_size=HDBSCAN_MIN_CLUSTER_SIZE, min_samples=HDBSCAN_MIN_SAMPLES,
+                                    metric='precomputed')
         return clusterer.fit_predict(distance_matrix)
     else:
         raise ValueError(f"Invalid clustering approach: {approach}")
@@ -124,7 +129,7 @@ def apply_clustering_approach(approach, distance_matrix=None):
 
 def select_representative_districts():
     """
-    Select a representative district from each cluster based on a chosen criterion (e.g., building count).
+    Select a representative district from each cluster based on the optimal number of clusters using silhouette score.
 
     :return:
     """
@@ -132,23 +137,22 @@ def select_representative_districts():
     buildings_with_clusters = gpd.read_file(CLUSTERED_BUILDING_DATA_PATH)
 
     # Step 1: Group by 'cluster' and 'LU_DESC' to get counts of land-use types per cluster
-    cluster_landuse_counts = buildings_with_clusters.groupby(['cluster', 'LU_DESC']).size().unstack(fill_value=0)[1:]
+    cluster_landuse_counts = buildings_with_clusters[buildings_with_clusters['cluster']
+                                                     != -1].groupby(['cluster', 'LU_DESC']).size().unstack(fill_value=0)
 
     # Step 2: Calculate the percentage of each land-use type within each cluster
     cluster_landuse_percentage = cluster_landuse_counts.div(cluster_landuse_counts.sum(axis=1), axis=0)
     cluster_landuse_array = cluster_landuse_percentage.fillna(0).to_numpy()  # Ensure no NaN values
 
-    # Step 3: Perform k-medoid clustering based on the percentage distributions
-    kmedoids = KMedoids(N_LAND_USE_CLUSTERS, method='fasterpam', metric=LAND_USE_DISTANCE_METRIC, random_state=42)
-    district_fit = kmedoids.fit(cluster_landuse_array)
+    # Step 3: Dynamically select the number of clusters based on silhouette score
+    best_num_clusters, best_kmedoids_model = select_optimal_number_of_clusters(cluster_landuse_array)
 
     # Step 4: Identify the representative districts
-    representative_districts = buildings_with_clusters[buildings_with_clusters['cluster'].isin(district_fit.medoid_indices_)]
+    medoid_ids = best_kmedoids_model.medoid_indices_
+    representative_districts = buildings_with_clusters[buildings_with_clusters['cluster'].isin(medoid_ids)]
 
     # Save the representative districts to a Shape-file
-    for i, medoid_idx in enumerate(district_fit.medoid_indices_):
-        representative_district = representative_districts[representative_districts['cluster'] == medoid_idx]
-        representative_district.to_file(REPRESENTATIVE_DISTRICT_PATH, driver='ESRI Shapefile')
+    save_as_shapefile(representative_districts, medoid_ids)
 
     # Visualization
     fig, ax = plt.subplots(figsize=(10, 10))
@@ -158,7 +162,69 @@ def select_representative_districts():
     plt.show()
 
 
+def select_optimal_number_of_clusters(cluster_landuse_array):
+    """
+    Select the optimal number of clusters based on silhouette score.
+
+    :param cluster_landuse_array: Numpy array with percentage distributions of land-use types per cluster
+    :param max_clusters: Maximum number of clusters to try
+    :return: Optimal number of clusters and the corresponding k-medoids model
+    """
+    best_num_clusters = MIN_LAND_USE_CLUSTERS  # Start with 2 clusters
+    best_silhouette_score = -1  # Initialize to a low value
+    best_kmedoids_model = None
+
+    # Loop over different numbers of clusters and calculate silhouette scores
+    for num_clusters in range(MIN_LAND_USE_CLUSTERS, MAX_LAND_USE_CLUSTERS + 1):
+        kmedoids = KMedoids(n_clusters=num_clusters, method='fasterpam', metric=LAND_USE_DISTANCE_METRIC,
+                            random_state=42)
+        district_fit = kmedoids.fit(cluster_landuse_array)
+
+        # Calculate silhouette score (ignoring outliers or -1 values)
+        labels = district_fit.labels_
+        score = silhouette_score(cluster_landuse_array, labels, metric='euclidean')
+
+        print(f"Number of clusters: {num_clusters}, Silhouette score: {score}")
+
+        # Keep track of the best model based on the silhouette score
+        if score > best_silhouette_score:
+            best_silhouette_score = score
+            best_num_clusters = num_clusters
+            best_kmedoids_model = district_fit
+
+    print(f"Best number of clusters: {best_num_clusters}, with silhouette score: {best_silhouette_score}")
+    return best_num_clusters, best_kmedoids_model
+
+
+def save_as_shapefile(all_representative_districts, medoid_ids):
+    """
+    Save the representative districts to a Shape-file.
+
+    :param all_representative_districts: GeoDataFrame of representative districts
+    :param medoid_ids: List of k-medoid cluster medoids' indices
+    :return:
+    """
+    # Clear the directory if it already exists
+    if os.path.exists(REPRESENTATIVE_DISTRICT_DIRECTORY):
+        shutil.rmtree(REPRESENTATIVE_DISTRICT_DIRECTORY)
+
+    for i, medoid_id in enumerate(medoid_ids):
+        representative_district = all_representative_districts[all_representative_districts['cluster'] == medoid_id]
+
+        # Create a unique subdirectory for each district
+        district_dir = os.path.join(REPRESENTATIVE_DISTRICT_DIRECTORY, f"district_{i+1}")
+        if not os.path.exists(district_dir):
+            os.makedirs(district_dir)
+
+        # Save the shapefile in the district subdirectory
+        file_path = os.path.join(district_dir, f"representative_district_{i+1}.shp")
+        try:
+            representative_district.to_file(file_path, driver='ESRI Shapefile')
+        except Exception as e:
+            print(f"Error saving shapefile for district {i+1}: {e}")
+
+
 # Entry point of the script
 if __name__ == '__main__':
-    create_geographical_clusters()
+    # create_geographical_clusters()
     select_representative_districts()
