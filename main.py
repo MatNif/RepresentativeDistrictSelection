@@ -3,6 +3,7 @@ from sklearn.cluster import DBSCAN
 from scipy.spatial.distance import cdist
 import numpy as np
 from pathlib import Path
+import pandas as pd
 import os
 import shutil
 import h5py
@@ -14,7 +15,7 @@ from sklearn.metrics import silhouette_score
 from constants import BUILDING_PLOT_DATA_PATH, POLYGON_DISTANCE_METRIC, DBSCAN_EPS, DBSCAN_MIN_SAMPLES, \
                       CLUSTERING_APPROACH, CLUSTERED_BUILDING_DATA_PATH, DISTANCE_MATRIX_PATH, NBR_BUILDINGS, \
                       LAND_USE_DISTANCE_METRIC, REPRESENTATIVE_DISTRICT_DIRECTORY, HDBSCAN_MIN_CLUSTER_SIZE, \
-                      HDBSCAN_MIN_SAMPLES, MIN_LAND_USE_CLUSTERS, MAX_LAND_USE_CLUSTERS
+                      HDBSCAN_MIN_SAMPLES, MIN_LAND_USE_CLUSTERS, MAX_LAND_USE_CLUSTERS, HYPERPARAMETER_TUNING
 
 
 def create_geographical_clusters():
@@ -44,20 +45,17 @@ def create_geographical_clusters():
     distance_matrix = generate_distance_matrix(plot_proxies_gdf, metric=POLYGON_DISTANCE_METRIC)
 
     # Step 3: Apply chosen clustering approach (and make use of the distance matrix)
-    plot_proxies_gdf['cluster'] = apply_clustering_approach(CLUSTERING_APPROACH, distance_matrix=distance_matrix)
+    plot_proxies_gdf['cluster'] = apply_clustering_approach(CLUSTERING_APPROACH, distance_matrix=distance_matrix,
+                                                            analyse_hyperparameters=HYPERPARAMETER_TUNING)
 
-    # Step 4: Map the DBSCAN clusters back to the original buildings
+    # Step 4: Map the clusters back to the original buildings
     buildings_with_clusters = buildings_with_plot.merge(plot_proxies_gdf[['cluster']], left_on='Name', right_index=True)
 
     # Save the clusters to a GeoJSON file
     buildings_with_clusters.to_file(CLUSTERED_BUILDING_DATA_PATH, driver='GeoJSON')
 
     # Visualization
-
-    fig, ax = plt.subplots(figsize=(10, 10))
-    buildings_with_clusters.plot(column='cluster', cmap='Set3', legend=True, ax=ax)
-    ax.set_title('DBSCAN Clustering of Multipolygon Proxies')
-    plt.show()
+    visualize_clusters(buildings_with_clusters)
 
 
 def compute_plot_proxy(buildings_in_plot):
@@ -108,23 +106,199 @@ def generate_distance_matrix(geometries_gdf, metric='euclidean'):
     return distance_matrix
 
 
-def apply_clustering_approach(approach, distance_matrix=None):
+def apply_clustering_approach(approach, distance_matrix=None, analyse_hyperparameters=False):
     """
     Apply the chosen clustering approach to the distance matrix.
 
     :param approach: Clustering approach to use
     :param distance_matrix: Distance matrix to use
+    :param analyse_hyperparameters: Whether to analyse hyperparameters
     :return: Clusters
     """
+    if not analyse_hyperparameters:
+        clusterer = define_clusterer(approach)
+        clusters = clusterer.fit_predict(distance_matrix)
+        return clusters
+    else:
+        best_clusters = analyse_hyperparameters_for_clustering(approach, distance_matrix)
+        return best_clusters
+
+
+def analyse_hyperparameters_for_clustering(approach, distance_matrix):
+    """
+    Analyse the hyperparameters for the clustering approach and return the best clusters.
+    """
     if approach == 'dbscan':
-        clusterer = DBSCAN(eps=DBSCAN_EPS, min_samples=DBSCAN_MIN_SAMPLES, metric='precomputed')
-        return clusterer.fit_predict(distance_matrix)
+        return analyse_hyperparameters_for_dbscan(distance_matrix)
     elif approach == 'hdbscan':
-        clusterer = hdbscan.HDBSCAN(min_cluster_size=HDBSCAN_MIN_CLUSTER_SIZE, min_samples=HDBSCAN_MIN_SAMPLES,
+        return analyse_hyperparameters_for_hdbscan(distance_matrix)
+
+
+def analyse_hyperparameters_for_dbscan(distance_matrix):
+    """
+    Analyse the hyperparameters for DBSCAN and return the best clusters.
+    """
+
+    # Define hyperparameter ranges
+    min_dbscan_eps = 40
+    max_dbscan_eps = 200
+    delta_dbscan_eps = 20
+
+    min_dbscan_min_samples = 10
+    max_dbscan_min_samples = 30
+    delta_dbscan_min_samples = 2
+
+    # Initialize the best hyperparameters and best clusters
+    best_share_outliers = 1
+    best_cluster_size_cv = np.inf
+    best_eps = 0
+    best_min_samples = 0
+    best_clusters = None
+
+    # Grid search over hyperparameters
+    for dbscan_eps in range(min_dbscan_eps, max_dbscan_eps + 1, delta_dbscan_eps):
+        for dbscan_min_samples in range(min_dbscan_min_samples, max_dbscan_min_samples + 1, delta_dbscan_min_samples):
+
+            # Perform clustering
+            clusterer = define_clusterer("dbscan", dbscan_eps=dbscan_eps, dbscan_min_samples=dbscan_min_samples)
+            clusters = clusterer.fit_predict(distance_matrix)
+
+            # Calculate the clustering metrics
+            share_outliers = np.sum(clusters == -1) / len(clusters)
+            buildings_per_cluster = pd.Series(clusters[clusters != -1]).value_counts()
+            cluster_size_cv = float(buildings_per_cluster.std() / buildings_per_cluster.mean())
+
+            print(f"Coefficient of variation of cluster size: {cluster_size_cv:.2f}, "
+                  f"Share of outliers: {share_outliers:.2f}, "
+                  f"eps: {dbscan_eps}, min_samples: {dbscan_min_samples}")
+
+            # Keep track of the best hyperparameters and clusters
+            if share_outliers <= best_share_outliers and cluster_size_cv <= best_cluster_size_cv:
+                best_share_outliers = share_outliers
+                best_cluster_size_cv = cluster_size_cv
+                best_eps = dbscan_eps
+                best_min_samples = dbscan_min_samples
+                best_clusters = clusters
+
+    print(f"Best clusters -- coefficient of variation of cluster size: {best_cluster_size_cv:.2f}, "
+          f"share of outliers: {best_share_outliers:.2f}, "
+          f"eps: {best_eps}, min_samples: {best_min_samples}")
+
+    return best_clusters
+
+
+def analyse_hyperparameters_for_hdbscan(distance_matrix):
+    # Define hyperparameter ranges
+    min_hdbscan_min_cluster_size = 10
+    max_hdbscan_min_cluster_size = 50
+    delta_hdbscan_min_cluster_size = 4
+
+    min_hdbscan_min_samples = 3
+    max_hdbscan_min_samples = 10
+    delta_hdbscan_min_samples = 1
+
+    # Initialize the best hyperparameters and best clusters
+    best_share_outliers = 1
+    best_cluster_size_cv = np.inf
+    best_min_samples = 0
+    best_min_cluster_size = 0
+    best_clusters = None
+
+    # Grid search over hyperparameters
+    for hdbscan_min_cluster_size in range(min_hdbscan_min_cluster_size, max_hdbscan_min_cluster_size + 1,
+                                          delta_hdbscan_min_cluster_size):
+        for hdbscan_min_samples in range(min_hdbscan_min_samples, max_hdbscan_min_samples + 1,
+                                         delta_hdbscan_min_samples):
+            # Perform clustering
+            clusterer = define_clusterer("hdbscan", hdbscan_min_cluster_size=hdbscan_min_cluster_size,
+                                         hdbscan_min_samples=hdbscan_min_samples)
+            clusters = clusterer.fit_predict(distance_matrix)
+
+            # Calculate the clustering metrics
+            share_outliers = np.sum(clusters == -1) / len(clusters)
+            buildings_per_cluster = pd.Series(clusters[clusters != -1]).value_counts()
+            cluster_size_cv = float(buildings_per_cluster.std() / buildings_per_cluster.mean())
+
+            print(f"Coefficient of variation of cluster size: {cluster_size_cv:.2f}, "
+                  f"Share of outliers: {share_outliers:.2f}, "
+                  f"min cluster size: {hdbscan_min_cluster_size}, min_samples: {hdbscan_min_samples}")
+
+            # Keep track of the best hyperparameters and clusters
+            if share_outliers <= best_share_outliers and cluster_size_cv <= best_cluster_size_cv:
+                best_share_outliers = share_outliers
+                best_cluster_size_cv = cluster_size_cv
+                best_min_cluster_size = hdbscan_min_cluster_size
+                best_min_samples = hdbscan_min_samples
+                best_clusters = clusters
+
+    print(f"Best clusters -- coefficient of variation of cluster size: {best_cluster_size_cv:.2f}, "
+          f"share of outliers: {best_share_outliers:.2f}, "
+          f"min cluster size: {best_min_cluster_size}, min_samples: {best_min_samples}")
+
+    return best_clusters
+
+
+def define_clusterer(approach, **kwargs):
+    """
+    Define the clustering approach to use and create the corresponding clusterer object.
+    """
+    # Default values
+    dbscan_eps = DBSCAN_EPS
+    dbscan_min_samples = DBSCAN_MIN_SAMPLES
+    hdbscan_min_cluster_size = HDBSCAN_MIN_CLUSTER_SIZE
+    hdbscan_min_samples = HDBSCAN_MIN_SAMPLES
+
+    # Override default values with keyword arguments
+    for key, value in kwargs.items():
+        if key == 'dbscan_eps':
+            dbscan_eps = value
+        elif key == 'dbscan_min_samples':
+            dbscan_min_samples = value
+        elif key == 'hdbscan_min_cluster_size':
+            hdbscan_min_cluster_size = value
+        elif key == 'hdbscan_min_samples':
+            hdbscan_min_samples = value
+        else:
+            raise Warning(f"Invalid keyword argument: {key}")
+
+    # Define the clusterer object
+    if approach == 'dbscan':
+        clusterer = DBSCAN(eps=dbscan_eps, min_samples=dbscan_min_samples, metric='precomputed')
+    elif approach == 'hdbscan':
+        clusterer = hdbscan.HDBSCAN(min_cluster_size=hdbscan_min_cluster_size, min_samples=hdbscan_min_samples,
                                     metric='precomputed')
-        return clusterer.fit_predict(distance_matrix)
     else:
         raise ValueError(f"Invalid clustering approach: {approach}")
+
+    return clusterer
+
+
+def visualize_clusters(buildings_with_clusters, representative_districts=None):
+    """
+    Visualize the clusters on a map.
+    """
+    # Separate outliers (cluster == -1) from the main dataset
+    outliers = buildings_with_clusters[buildings_with_clusters['cluster'] == -1]
+    non_outliers = buildings_with_clusters[buildings_with_clusters['cluster'] != -1]
+
+    # Create the figure and axis for the plot
+    fig, ax = plt.subplots(figsize=(10, 10))
+
+    # Plot the non-outliers (buildings with clusters)
+    non_outliers.plot(column='cluster', cmap='Set3', legend=True, ax=ax)
+
+    # Plot the outliers with black outline and white fill
+    outliers.plot(ax=ax, facecolor='white', edgecolor='black', linewidth=0.5, marker='o')
+
+    # Plot the representative districts with black outlines
+    if representative_districts is not None:
+        representative_districts.plot(ax=ax, color='black', edgecolor='red', linewidth=2)
+
+    # Set the title
+    ax.set_title('Representative Districts')
+
+    # Show the plot
+    plt.show()
 
 
 def select_representative_districts():
@@ -155,11 +329,7 @@ def select_representative_districts():
     save_as_shapefile(representative_districts, medoid_ids)
 
     # Visualization
-    fig, ax = plt.subplots(figsize=(10, 10))
-    buildings_with_clusters.plot(column='cluster', cmap='Set3', legend=True, ax=ax)
-    representative_districts.plot(ax=ax, color='black', edgecolor='black', linewidth=2)
-    ax.set_title('Representative Districts')
-    plt.show()
+    visualize_clusters(buildings_with_clusters, representative_districts)
 
 
 def select_optimal_number_of_clusters(cluster_landuse_array):
@@ -167,7 +337,6 @@ def select_optimal_number_of_clusters(cluster_landuse_array):
     Select the optimal number of clusters based on silhouette score.
 
     :param cluster_landuse_array: Numpy array with percentage distributions of land-use types per cluster
-    :param max_clusters: Maximum number of clusters to try
     :return: Optimal number of clusters and the corresponding k-medoids model
     """
     best_num_clusters = MIN_LAND_USE_CLUSTERS  # Start with 2 clusters
@@ -182,7 +351,7 @@ def select_optimal_number_of_clusters(cluster_landuse_array):
 
         # Calculate silhouette score (ignoring outliers or -1 values)
         labels = district_fit.labels_
-        score = silhouette_score(cluster_landuse_array, labels, metric='euclidean')
+        score = silhouette_score(cluster_landuse_array, labels, metric=LAND_USE_DISTANCE_METRIC)
 
         print(f"Number of clusters: {num_clusters}, Silhouette score: {score}")
 
@@ -217,7 +386,7 @@ def save_as_shapefile(all_representative_districts, medoid_ids):
             os.makedirs(district_dir)
 
         # Save the shapefile in the district subdirectory
-        file_path = os.path.join(district_dir, f"representative_district_{i+1}.shp")
+        file_path = os.path.join(district_dir, f"zone.shp")
         try:
             representative_district.to_file(file_path, driver='ESRI Shapefile')
         except Exception as e:
@@ -226,5 +395,5 @@ def save_as_shapefile(all_representative_districts, medoid_ids):
 
 # Entry point of the script
 if __name__ == '__main__':
-    # create_geographical_clusters()
+    create_geographical_clusters()
     select_representative_districts()
