@@ -4,6 +4,7 @@ from scipy.spatial.distance import cdist
 import numpy as np
 from pathlib import Path
 import pandas as pd
+import math
 import os
 import shutil
 import h5py
@@ -150,7 +151,9 @@ def analyse_hyperparameters_for_dbscan(distance_matrix):
 
     # Initialize the best hyperparameters and best clusters
     best_share_outliers = 1
+    lowest_share_outliers = 1
     best_cluster_size_cv = np.inf
+    lowest_cluster_size_cv = np.inf
     best_eps = 0
     best_min_samples = 0
     best_clusters = None
@@ -168,12 +171,27 @@ def analyse_hyperparameters_for_dbscan(distance_matrix):
             buildings_per_cluster = pd.Series(clusters[clusters != -1]).value_counts()
             cluster_size_cv = float(buildings_per_cluster.std() / buildings_per_cluster.mean())
 
+            # Print cluster metrics evaluation
             print(f"Coefficient of variation of cluster size: {cluster_size_cv:.2f}, "
                   f"Share of outliers: {share_outliers:.2f}, "
                   f"eps: {dbscan_eps}, min_samples: {dbscan_min_samples}")
 
-            # Keep track of the best hyperparameters and clusters
-            if share_outliers <= best_share_outliers and cluster_size_cv <= best_cluster_size_cv:
+            if share_outliers < lowest_share_outliers:
+                print(f"New lowest share of outliers: {share_outliers:.2f}")
+                lowest_share_outliers = share_outliers
+
+            if cluster_size_cv < lowest_cluster_size_cv:
+                print(f"New lowest coefficient of variation of cluster size: {cluster_size_cv:.2f}")
+                lowest_cluster_size_cv = cluster_size_cv
+
+            # Select the best cluster hyperparameters based on the euclidean distance to the dream point in the
+            # hyperparameter space drawn by the lowest share of outliers and the lowest coefficient of variation of
+            # cluster size
+            this_dream_point_distance = math.sqrt((share_outliers - lowest_share_outliers) ** 2 +
+                                                  (cluster_size_cv - lowest_cluster_size_cv) ** 2)
+            best_dream_point_distance = math.sqrt((best_share_outliers - lowest_share_outliers) ** 2 +
+                                                  (best_cluster_size_cv - lowest_cluster_size_cv) ** 2)
+            if this_dream_point_distance < best_dream_point_distance:
                 best_share_outliers = share_outliers
                 best_cluster_size_cv = cluster_size_cv
                 best_eps = dbscan_eps
@@ -199,7 +217,9 @@ def analyse_hyperparameters_for_hdbscan(distance_matrix):
 
     # Initialize the best hyperparameters and best clusters
     best_share_outliers = 1
+    lowest_share_outliers = 1
     best_cluster_size_cv = np.inf
+    lowest_cluster_size_cv = np.inf
     best_min_samples = 0
     best_min_cluster_size = 0
     best_clusters = None
@@ -219,12 +239,29 @@ def analyse_hyperparameters_for_hdbscan(distance_matrix):
             buildings_per_cluster = pd.Series(clusters[clusters != -1]).value_counts()
             cluster_size_cv = float(buildings_per_cluster.std() / buildings_per_cluster.mean())
 
+            # Print cluster metrics evaluation
             print(f"Coefficient of variation of cluster size: {cluster_size_cv:.2f}, "
                   f"Share of outliers: {share_outliers:.2f}, "
                   f"min cluster size: {hdbscan_min_cluster_size}, min_samples: {hdbscan_min_samples}")
 
-            # Keep track of the best hyperparameters and clusters
-            if share_outliers <= best_share_outliers and cluster_size_cv <= best_cluster_size_cv:
+            if share_outliers < lowest_share_outliers:
+                print(f"New lowest share of outliers: {share_outliers:.2f}")
+                lowest_share_outliers = share_outliers
+
+            if cluster_size_cv < lowest_cluster_size_cv:
+                print(f"New lowest coefficient of variation of cluster size: {cluster_size_cv:.2f}")
+                lowest_cluster_size_cv = cluster_size_cv
+
+            # Select the best cluster hyperparameters based on the solution's distance to the utopian point in the
+            # hyperparameter space - a concept commonly used in compromise programming
+            # (first described by Yu (1973), DOI: 10.1287/mnsc.19.8.936)
+            this_utopian_point_distance = math.sqrt((share_outliers - lowest_share_outliers) ** 2 +
+                                                    (cluster_size_cv - lowest_cluster_size_cv) ** 2)
+            best_utopian_point_distance = math.sqrt((best_share_outliers - lowest_share_outliers) ** 2 +
+                                                    (best_cluster_size_cv - lowest_cluster_size_cv) ** 2)
+            if this_utopian_point_distance < best_utopian_point_distance:
+                print(f"New best clusters assigned (utopian point distance: {this_utopian_point_distance:.2f} < "
+                      f"{best_utopian_point_distance:.2f})")
                 best_share_outliers = share_outliers
                 best_cluster_size_cv = cluster_size_cv
                 best_min_cluster_size = hdbscan_min_cluster_size
