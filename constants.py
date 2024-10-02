@@ -9,7 +9,7 @@ CLUSTERED_BUILDING_DATA_PATH = 'data/clustered/clustered_buildings.geojson'
 REPRESENTATIVE_DISTRICT_DIRECTORY = 'data/clustered/representative_districts'
 NBR_BUILDINGS = 'all'
 
-# Clustering parameters
+# Footprint clustering parameters
 CLUSTERING_APPROACH = 'hdbscan'
 POLYGON_DISTANCE_METRIC = 'hausdorff'
 DBSCAN_EPS = 180    # meters
@@ -17,8 +17,32 @@ DBSCAN_MIN_SAMPLES = 3
 HDBSCAN_MIN_CLUSTER_SIZE = 2
 HDBSCAN_MIN_SAMPLES = 3
 
-MIN_LAND_USE_CLUSTERS = 2
-MAX_LAND_USE_CLUSTERS = 20
+# Land use clustering parameters
+KMEDOIDS_K = 5
 LAND_USE_DISTANCE_METRIC = 'manhattan'
 
+### Hyperparameter tuning ###
 HYPERPARAMETER_TUNING = True
+
+# Footprint clustering hyperparameter grid search:
+#   DBSCAN
+MIN_DBSCAN_EPS = 40
+MAX_DBSCAN_EPS = 200
+DELTA_DBSCAN_EPS = 20
+
+MIN_DBSCAN_MIN_SAMPLES = 10
+MAX_DBSCAN_MIN_SAMPLES = 30
+DELTA_DBSCAN_MIN_SAMPLES = 2
+
+#   HDBSCAN
+MIN_HDBSCAN_MIN_CLUSTER_SIZE = 10
+MAX_HDBSCAN_MIN_CLUSTER_SIZE = 50
+DELTA_HDBSCAN_MIN_CLUSTER_SIZE = 4
+
+MIN_HDBSCAN_MIN_SAMPLES = 3
+MAX_HDBSCAN_MIN_SAMPLES = 10
+DELTA_HDBSCAN_MIN_SAMPLES = 1
+
+# Land use clustering hyperparameters
+MIN_LAND_USE_CLUSTERS = 3
+MAX_LAND_USE_CLUSTERS = 20

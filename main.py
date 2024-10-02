@@ -16,7 +16,11 @@ from sklearn.metrics import silhouette_score
 from constants import BUILDING_PLOT_DATA_PATH, POLYGON_DISTANCE_METRIC, DBSCAN_EPS, DBSCAN_MIN_SAMPLES, \
                       CLUSTERING_APPROACH, CLUSTERED_BUILDING_DATA_PATH, DISTANCE_MATRIX_PATH, NBR_BUILDINGS, \
                       LAND_USE_DISTANCE_METRIC, REPRESENTATIVE_DISTRICT_DIRECTORY, HDBSCAN_MIN_CLUSTER_SIZE, \
-                      HDBSCAN_MIN_SAMPLES, MIN_LAND_USE_CLUSTERS, MAX_LAND_USE_CLUSTERS, HYPERPARAMETER_TUNING
+                      HDBSCAN_MIN_SAMPLES, MIN_LAND_USE_CLUSTERS, MAX_LAND_USE_CLUSTERS, HYPERPARAMETER_TUNING, \
+                      MIN_DBSCAN_EPS, MAX_DBSCAN_EPS, DELTA_DBSCAN_EPS, MIN_DBSCAN_MIN_SAMPLES, MAX_DBSCAN_MIN_SAMPLES,\
+                      DELTA_DBSCAN_MIN_SAMPLES, MIN_HDBSCAN_MIN_CLUSTER_SIZE, MAX_HDBSCAN_MIN_CLUSTER_SIZE,\
+                      DELTA_HDBSCAN_MIN_CLUSTER_SIZE, MIN_HDBSCAN_MIN_SAMPLES, MAX_HDBSCAN_MIN_SAMPLES, \
+                      DELTA_HDBSCAN_MIN_SAMPLES, KMEDOIDS_K
 
 
 def create_geographical_clusters():
@@ -139,16 +143,6 @@ def analyse_hyperparameters_for_dbscan(distance_matrix):
     """
     Analyse the hyperparameters for DBSCAN and return the best clusters.
     """
-
-    # Define hyperparameter ranges
-    min_dbscan_eps = 40
-    max_dbscan_eps = 200
-    delta_dbscan_eps = 20
-
-    min_dbscan_min_samples = 10
-    max_dbscan_min_samples = 30
-    delta_dbscan_min_samples = 2
-
     # Initialize the best hyperparameters and best clusters
     best_share_outliers = 1
     lowest_share_outliers = 1
@@ -159,8 +153,8 @@ def analyse_hyperparameters_for_dbscan(distance_matrix):
     best_clusters = None
 
     # Grid search over hyperparameters
-    for dbscan_eps in range(min_dbscan_eps, max_dbscan_eps + 1, delta_dbscan_eps):
-        for dbscan_min_samples in range(min_dbscan_min_samples, max_dbscan_min_samples + 1, delta_dbscan_min_samples):
+    for dbscan_eps in range(MIN_DBSCAN_EPS, MAX_DBSCAN_EPS + 1, DELTA_DBSCAN_EPS):
+        for dbscan_min_samples in range(MIN_DBSCAN_MIN_SAMPLES, MAX_DBSCAN_MIN_SAMPLES + 1, DELTA_DBSCAN_MIN_SAMPLES):
 
             # Perform clustering
             clusterer = define_clusterer("dbscan", dbscan_eps=dbscan_eps, dbscan_min_samples=dbscan_min_samples)
@@ -206,15 +200,9 @@ def analyse_hyperparameters_for_dbscan(distance_matrix):
 
 
 def analyse_hyperparameters_for_hdbscan(distance_matrix):
-    # Define hyperparameter ranges
-    min_hdbscan_min_cluster_size = 10
-    max_hdbscan_min_cluster_size = 50
-    delta_hdbscan_min_cluster_size = 4
-
-    min_hdbscan_min_samples = 3
-    max_hdbscan_min_samples = 10
-    delta_hdbscan_min_samples = 1
-
+    """
+    Analyse the hyperparameters for HDBSCAN and return the best clusters.
+    """
     # Initialize the best hyperparameters and best clusters
     best_share_outliers = 1
     lowest_share_outliers = 1
@@ -225,10 +213,10 @@ def analyse_hyperparameters_for_hdbscan(distance_matrix):
     best_clusters = None
 
     # Grid search over hyperparameters
-    for hdbscan_min_cluster_size in range(min_hdbscan_min_cluster_size, max_hdbscan_min_cluster_size + 1,
-                                          delta_hdbscan_min_cluster_size):
-        for hdbscan_min_samples in range(min_hdbscan_min_samples, max_hdbscan_min_samples + 1,
-                                         delta_hdbscan_min_samples):
+    for hdbscan_min_cluster_size in range(MIN_HDBSCAN_MIN_CLUSTER_SIZE, MAX_HDBSCAN_MIN_CLUSTER_SIZE + 1,
+                                          DELTA_HDBSCAN_MIN_CLUSTER_SIZE):
+        for hdbscan_min_samples in range(MIN_HDBSCAN_MIN_SAMPLES, MAX_HDBSCAN_MIN_SAMPLES + 1,
+                                         DELTA_HDBSCAN_MIN_SAMPLES):
             # Perform clustering
             clusterer = define_clusterer("hdbscan", hdbscan_min_cluster_size=hdbscan_min_cluster_size,
                                          hdbscan_min_samples=hdbscan_min_samples)
@@ -356,10 +344,13 @@ def select_representative_districts():
     cluster_landuse_array = cluster_landuse_percentage.fillna(0).to_numpy()  # Ensure no NaN values
 
     # Step 3: Dynamically select the number of clusters based on silhouette score
-    best_num_clusters, best_kmedoids_model = select_optimal_number_of_clusters(cluster_landuse_array)
+    if HYPERPARAMETER_TUNING:
+        kmedoids_fit = select_optimal_number_of_clusters(cluster_landuse_array)
+    else:
+        kmedoids_fit = kmedoids_clustering(cluster_landuse_array, KMEDOIDS_K)
 
     # Step 4: Identify the representative districts
-    medoid_ids = best_kmedoids_model.medoid_indices_
+    medoid_ids = kmedoids_fit.medoid_indices_
     representative_districts = buildings_with_clusters[buildings_with_clusters['cluster'].isin(medoid_ids)]
 
     # Save the representative districts to a Shape-file
@@ -382,9 +373,8 @@ def select_optimal_number_of_clusters(cluster_landuse_array):
 
     # Loop over different numbers of clusters and calculate silhouette scores
     for num_clusters in range(MIN_LAND_USE_CLUSTERS, MAX_LAND_USE_CLUSTERS + 1):
-        kmedoids = KMedoids(n_clusters=num_clusters, method='fasterpam', metric=LAND_USE_DISTANCE_METRIC,
-                            random_state=42)
-        district_fit = kmedoids.fit(cluster_landuse_array)
+        # Fit the k-medoids model
+        district_fit = kmedoids_clustering(cluster_landuse_array, num_clusters)
 
         # Calculate silhouette score (ignoring outliers or -1 values)
         labels = district_fit.labels_
@@ -399,7 +389,18 @@ def select_optimal_number_of_clusters(cluster_landuse_array):
             best_kmedoids_model = district_fit
 
     print(f"Best number of clusters: {best_num_clusters}, with silhouette score: {best_silhouette_score}")
-    return best_num_clusters, best_kmedoids_model
+    return best_kmedoids_model
+
+
+def kmedoids_clustering(cluster_landuse_array, num_clusters):
+    """
+    Perform k-medoids clustering on the land-use distribution data.
+    """
+    kmedoids = KMedoids(n_clusters=num_clusters, method='fasterpam', metric=LAND_USE_DISTANCE_METRIC,
+                        random_state=42)
+    district_fit = kmedoids.fit(cluster_landuse_array)
+
+    return district_fit
 
 
 def save_as_shapefile(all_representative_districts, medoid_ids):
@@ -432,5 +433,5 @@ def save_as_shapefile(all_representative_districts, medoid_ids):
 
 # Entry point of the script
 if __name__ == '__main__':
-    create_geographical_clusters()
+    # create_geographical_clusters()
     select_representative_districts()
