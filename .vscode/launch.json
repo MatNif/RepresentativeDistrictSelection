@@ -1,0 +1,17 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Python: Run as Module",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "postprocessing.cea_data_prep_main",  // Use module path here
+            "console": "integratedTerminal",  // Use the terminal to see output
+            "justMyCode": false,  // Optional: If you want to step through external libraries during debugging
+            "cwd": "${workspaceFolder}",  // Optional: Ensures you're in the root of your project
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"  // Optional: Adds your workspace to the Python path
+            }
+        }
+    ]
+}

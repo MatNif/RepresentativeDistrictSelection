@@ -7,6 +7,7 @@ BUILDING_PLOT_DATA_PATH = 'data/cleaned/buildings_with_plot.geojson'
 DISTANCE_MATRIX_PATH = 'data/cleaned/distance_matrix.csv'
 CLUSTERED_BUILDING_DATA_PATH = 'data/clustered/clustered_buildings.geojson'
 REPRESENTATIVE_DISTRICT_DIRECTORY = 'data/clustered/representative_districts'
+CEA_FILES_DIRECTORY = 'data/cea'
 NBR_BUILDINGS = 'all'
 
 # Footprint clustering parameters
@@ -46,3 +47,7 @@ DELTA_HDBSCAN_MIN_SAMPLES = 1
 # Land use clustering hyperparameters
 MIN_LAND_USE_CLUSTERS = 3
 MAX_LAND_USE_CLUSTERS = 20
+
+# CEA data preparation
+OVERLAP_THRESHOLD = 0.95
+PLOT_MATCHED_BUILDINGS = True

@@ -1,2 +1,6 @@
+__pycache__/
+cache/
 data/
 .idea/
+postprocessing/__pycache__/
+postprocessing/cache/
